@@ -121,15 +121,36 @@ class PlanningTraj:
             len(dynamic_obs_data) // 5
         )  # Each obstacle consists of 5 params -> ID, x, y, v_x, v_y [Float64MultiArray is a flat list including all obstacles]
 
+        
         with self.data_lock:
+
+            # Padding values,incase observed number of obstacles < initialized number of obstacles
+            self.x_obs_init_dy.fill(1000.0) 
+            self.y_obs_init_dy.fill(1000.0)
+            self.vx_obs_dy.fill(0.0)
+            self.vy_obs_dy.fill(0.0)
+
+            id_to_index = {}
+            current_index = 0
+
             for i in range(num_obstacles):
                 idx = i * 5
                 obstacle_id = int(dynamic_obs_data[idx])
-                if 0 <= obstacle_id < self.num_dynamic_obstacles:
-                    self.x_obs_init_dy[obstacle_id] = dynamic_obs_data[idx + 1]
-                    self.y_obs_init_dy[obstacle_id] = dynamic_obs_data[idx + 2]
-                    self.vx_obs_dy[obstacle_id] = dynamic_obs_data[idx + 3]
-                    self.vy_obs_dy[obstacle_id] = dynamic_obs_data[idx + 4]
+            
+                if obstacle_id not in id_to_index:
+                    if current_index < self.num_dynamic_obstacles:
+                        id_to_index[obstacle_id] = current_index
+                        current_index += 1
+                    else:
+                        raise ValueError("Warning: More obstacles detected than can be handled.")
+            
+                array_idx = id_to_index[obstacle_id]
+                self.x_obs_init_dy[array_idx] = dynamic_obs_data[idx + 1]
+                self.y_obs_init_dy[array_idx] = dynamic_obs_data[idx + 2]
+                self.vx_obs_dy[array_idx] = dynamic_obs_data[idx + 3]
+                self.vy_obs_dy[array_idx] = dynamic_obs_data[idx + 4]
+
+                   
 
     def run_optimization(self):
         start_time = time.time()
