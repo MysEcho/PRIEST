@@ -13,7 +13,7 @@ from std_msgs.msg import Float64MultiArray
 from geometry_msgs.msg import Twist
 from tf.transformations import euler_from_quaternion
 import mpc_non_dy
-
+import csv
 
 class PlanningTraj:
 
@@ -27,11 +27,23 @@ class PlanningTraj:
         self.setup_mpc_parameters()
         self.initialize_obstacle_data()
         self.setup_subscribers()
+        self.initialize_csv()
 
         self.key = random.PRNGKey(0)
         self.x_guess_per, self.y_guess_per = None, None
 
-    # Variable Initialization Methods
+    def initialize_csv(self):
+        # Initialize CSV file for storing coefficients
+        self.csv_filename = 'coefficient_data_2.csv'
+        with open(self.csv_filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            header = ['Timestamp', 'c_x_best', 'c_y_best']
+            for i in range(self.num_dynamic_obstacles):
+                header.extend([f'obs_{i}_x', f'obs_{i}_y', f'obs_{i}_vx', f'obs_{i}_vy'])
+            writer.writerow(header)
+
+        self.iteration_count = 0
+
 
     def initialize_variables(self):
         self.x_init, self.y_init = 1.0, 2.0
@@ -67,15 +79,9 @@ class PlanningTraj:
         self.pcd = open3d.geometry.PointCloud()
 
     def setup_subscribers(self):
-        rospy.Subscriber(
-            "/pointcloud", PointCloud, self.pointcloud_callback
-        )  # Obtained from laserscan_to_pointcloud.py
-        rospy.Subscriber(
-            "/obstacle_velocities", Float64MultiArray, self.dynamic_obs_callback
-        )  # Obtained from obstacle_metadata_publisher.py
-        rospy.Subscriber(
-            "/odometry", Odometry, self.odometry_callback
-        )  # Obtained from huron rosbag
+        rospy.Subscriber("/pointcloud", PointCloud, self.pointcloud_callback)
+        rospy.Subscriber("/obstacle_velocities", Float64MultiArray, self.dynamic_obs_callback)
+        rospy.Subscriber("/odometry", Odometry, self.odometry_callback)
 
     def odometry_callback(self, msg_odom):
         with self.data_lock:
@@ -83,15 +89,9 @@ class PlanningTraj:
             self.y_init = msg_odom.pose.pose.position.y
 
             orientation_q = msg_odom.pose.pose.orientation
-            orientation_list = [
-                orientation_q.x,
-                orientation_q.y,
-                orientation_q.z,
-                orientation_q.w,
-            ]
+            orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
             (_, _, self.theta_init) = euler_from_quaternion(orientation_list)
 
-        # Running Optimization inside callback function so that it iteratively runs
         self.run_optimization()
 
     def pointcloud_callback(self, msg_pointcloud):
@@ -114,17 +114,11 @@ class PlanningTraj:
             self.x_obs_init[num_down_samples:] = 100
             self.y_obs_init[num_down_samples:] = 100
 
-    # Added this (This function sets the dynamic obstacle variables according to the /pointcloud topic)
     def dynamic_obs_callback(self, msg_dynamic_obs):
         dynamic_obs_data = np.array(msg_dynamic_obs.data)
-        num_obstacles = (
-            len(dynamic_obs_data) // 5
-        )  # Each obstacle consists of 5 params -> ID, x, y, v_x, v_y [Float64MultiArray is a flat list including all obstacles]
+        num_obstacles = len(dynamic_obs_data) // 5
 
-        
         with self.data_lock:
-
-            # Padding values,incase observed number of obstacles < initialized number of obstacles
             self.x_obs_init_dy.fill(1000.0) 
             self.y_obs_init_dy.fill(1000.0)
             self.vx_obs_dy.fill(0.0)
@@ -150,43 +144,20 @@ class PlanningTraj:
                 self.vx_obs_dy[array_idx] = dynamic_obs_data[idx + 3]
                 self.vy_obs_dy[array_idx] = dynamic_obs_data[idx + 4]
 
-                   
-
     def run_optimization(self):
         start_time = time.time()
 
         prob = mpc_non_dy.batch_crowd_nav(
-            self.a_obs_1,
-            self.b_obs_1,
-            self.a_obs_2,
-            self.b_obs_2,
-            self.v_max,
-            self.v_min,
-            self.a_max,
-            50,
-            10,
-            self.t_fin,
-            self.num,
-            self.num_batch,
-            self.maxiter,
-            self.maxiter_cem,
-            self.weight_smoothness,
-            self.weight_track,
-            1000,
-            self.v_des,
+            self.a_obs_1, self.b_obs_1, self.a_obs_2, self.b_obs_2,
+            self.v_max, self.v_min, self.a_max, 50, 10,
+            self.t_fin, self.num, self.num_batch,
+            self.maxiter, self.maxiter_cem,
+            self.weight_smoothness, self.weight_track,
+            1000, self.v_des,
         )
 
         with self.data_lock:
-            initial_state = jnp.array(
-                [
-                    self.x_init,
-                    self.y_init,
-                    self.vx_init,
-                    self.vy_init,
-                    self.ax_init,
-                    self.ay_init,
-                ]
-            )
+            initial_state = jnp.array([self.x_init, self.y_init, self.vx_init, self.vy_init, self.ax_init, self.ay_init])
             x_obs_init_dy = self.x_obs_init_dy.copy()
             y_obs_init_dy = self.y_obs_init_dy.copy()
             x_obs_init = self.x_obs_init.copy()
@@ -196,116 +167,54 @@ class PlanningTraj:
             vx_obs = self.vx_obs.copy()
             vy_obs = self.vy_obs.copy()
 
-        x_waypoint = jnp.linspace(
-            self.x_init, self.x_fin + 10.0 * jnp.cos(self.theta_init), 1000
-        )
-        y_waypoint = jnp.linspace(
-            self.y_init, self.y_fin + 10.0 * jnp.sin(self.theta_init), 1000
-        )
+        x_waypoint = jnp.linspace(self.x_init, self.x_fin + 10.0 * jnp.cos(self.theta_init), 1000)
+        y_waypoint = jnp.linspace(self.y_init, self.y_fin + 10.0 * jnp.sin(self.theta_init), 1000)
 
         arc_length, arc_vec, x_diff, y_diff = prob.path_spline(x_waypoint, y_waypoint)
 
         if self.x_guess_per is None or self.y_guess_per is None:
             self.x_guess_per, self.y_guess_per = prob.compute_warm_traj(
-                initial_state,
-                self.v_des,
-                x_waypoint,
-                y_waypoint,
-                arc_vec,
-                x_diff,
-                y_diff,
+                initial_state, self.v_des, x_waypoint, y_waypoint, arc_vec, x_diff, y_diff,
             )
 
-        (
-            x_obs_trajectory,
-            y_obs_trajectory,
-            x_obs_trajectory_proj,
-            y_obs_trajectory_proj,
-            x_obs_trajectory_dy,
-            y_obs_trajectory_dy,
-        ) = prob.compute_obs_traj_prediction(
-            jnp.asarray(x_obs_init_dy).flatten(),
-            jnp.asarray(y_obs_init_dy).flatten(),
-            vx_obs_dy,
-            vy_obs_dy,
-            jnp.asarray(x_obs_init).flatten(),
-            jnp.asarray(y_obs_init).flatten(),
-            vx_obs,
-            vy_obs,
-            initial_state[0],
-            initial_state[1],
+        x_obs_trajectory, y_obs_trajectory, x_obs_trajectory_proj, y_obs_trajectory_proj, x_obs_trajectory_dy, y_obs_trajectory_dy = prob.compute_obs_traj_prediction(
+            jnp.asarray(x_obs_init_dy).flatten(), jnp.asarray(y_obs_init_dy).flatten(),
+            vx_obs_dy, vy_obs_dy, jnp.asarray(x_obs_init).flatten(), jnp.asarray(y_obs_init).flatten(),
+            vx_obs, vy_obs, initial_state[0], initial_state[1],
         )
 
-        (
-            sol_x_bar,
-            sol_y_bar,
-            x_guess,
-            y_guess,
-            xdot_guess,
-            ydot_guess,
-            xddot_guess,
-            yddot_guess,
-            c_mean,
-            c_cov,
-            x_fin,
-            y_fin,
-        ) = prob.compute_traj_guess(
-            initial_state,
-            x_obs_trajectory,
-            y_obs_trajectory,
-            x_obs_trajectory_dy,
-            y_obs_trajectory_dy,
-            self.v_des,
-            x_waypoint,
-            y_waypoint,
-            arc_vec,
-            self.x_guess_per,
-            self.y_guess_per,
-            x_diff,
-            y_diff,
+        sol_x_bar, sol_y_bar, x_guess, y_guess, xdot_guess, ydot_guess, xddot_guess, yddot_guess, c_mean, c_cov, x_fin, y_fin = prob.compute_traj_guess(
+            initial_state, x_obs_trajectory, y_obs_trajectory, x_obs_trajectory_dy, y_obs_trajectory_dy,
+            self.v_des, x_waypoint, y_waypoint, arc_vec, self.x_guess_per, self.y_guess_per, x_diff, y_diff,
         )
 
         lamda_x = jnp.zeros((self.num_batch, prob.nvar))
         lamda_y = jnp.zeros((self.num_batch, prob.nvar))
 
-        x, y, c_x_best, c_y_best, x_best, y_best, self.x_guess_per, self.y_guess_per = (
-            prob.compute_cem(
-                self.key,
-                initial_state,
-                x_fin,
-                y_fin,
-                lamda_x,
-                lamda_y,
-                x_obs_trajectory,
-                y_obs_trajectory,
-                x_obs_trajectory_proj,
-                y_obs_trajectory_proj,
-                x_obs_trajectory_dy,
-                y_obs_trajectory_dy,
-                sol_x_bar,
-                sol_y_bar,
-                x_guess,
-                y_guess,
-                xdot_guess,
-                ydot_guess,
-                xddot_guess,
-                yddot_guess,
-                x_waypoint,
-                y_waypoint,
-                arc_vec,
-                c_mean,
-                c_cov,
-            )
+        x, y, c_x_best, c_y_best, x_best, y_best, self.x_guess_per, self.y_guess_per = prob.compute_cem(
+            self.key, initial_state, x_fin, y_fin, lamda_x, lamda_y,
+            x_obs_trajectory, y_obs_trajectory, x_obs_trajectory_proj, y_obs_trajectory_proj,
+            x_obs_trajectory_dy, y_obs_trajectory_dy, sol_x_bar, sol_y_bar,
+            x_guess, y_guess, xdot_guess, ydot_guess, xddot_guess, yddot_guess,
+            x_waypoint, y_waypoint, arc_vec, c_mean, c_cov,
         )
 
         print(f"Optimization time: {time.time() - start_time:.4f} seconds")
-        print(c_x_best, c_y_best)
 
-        # self.update_robot_state(x_best, y_best)
-        # self.update_goal()
+        # Save the best coefficients to CSV (I did this in a hurry, might be flawed. Check once, last time I saw it was saving 0.)
+        self.save_coefficients(c_x_best, c_y_best, self.x_obs_init_dy, self.y_obs_init_dy, self.vx_obs_dy, self.vy_obs_dy)
 
-        # if self.goal_reached():
-        #     print("Goal reached!")
+    def save_coefficients(self, c_x_best, c_y_best, x_obs_init_dy, y_obs_init_dy, vx_obs_dy, vy_obs_dy):
+        timestamp = rospy.get_time()
+        with open(self.csv_filename, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            row = [timestamp, c_x_best, c_y_best]
+            for i in range(self.num_dynamic_obstacles):
+                row.extend([x_obs_init_dy[i], y_obs_init_dy[i], vx_obs_dy[i], vy_obs_dy[i]])
+            writer.writerow(row)
+        
+        self.iteration_count += 1
+        print(f"Saved data for iteration {self.iteration_count}")
 
     # Update Robot State for MPC (Not used for Single Optimization step) {Check for change}
     def update_robot_state(self, x_best, y_best):
@@ -314,19 +223,15 @@ class PlanningTraj:
             self.vy_init = (y_best[1] - y_best[0]) / self.t_fin
 
     def goal_reached(self):
-        distance_to_goal = (
-            (self.x_init - self.x_fin_t) ** 2 + (self.y_init - self.y_fin_t) ** 2
-        ) ** 0.5
+        distance_to_goal = ((self.x_init - self.x_fin_t) ** 2 + (self.y_init - self.y_fin_t) ** 2) ** 0.5
         return distance_to_goal < 0.1
 
-    # TODO: Add the update goal function
     def update_goal(self):
         pass
 
     def shutdown(self):
         rospy.loginfo("Stopping the robot...")
         rospy.sleep(1)
-
 
 if __name__ == "__main__":
     try:
