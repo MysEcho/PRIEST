@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/wheelchair/.conda/envs/priest/bin/python3
 
 import rospy
 import numpy as np
@@ -9,11 +9,14 @@ import threading
 import open3d
 from sensor_msgs.msg import PointCloud
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, Int16
 from geometry_msgs.msg import Twist
 from tf.transformations import euler_from_quaternion
-import mpc_non_dy
 import csv
+
+import sys
+sys.path.insert(0, '..')
+import mpc_non_dy
 
 class PlanningTraj:
 
@@ -21,6 +24,8 @@ class PlanningTraj:
         rospy.init_node("MPC_planning")
         rospy.on_shutdown(self.shutdown)
 
+        self.rate = rospy.Rate(10)
+        self.done_pub = rospy.Publisher("done", Int16, queue_size=10)
         self.data_lock = threading.Lock()
         self.initialize_variables()
         self.setup_mpc_parameters()
@@ -86,12 +91,14 @@ class PlanningTraj:
         self.pcd = open3d.geometry.PointCloud()
 
     def setup_subscribers(self):
+        print("Setting Up Subscribers")
         rospy.Subscriber("/pointcloud", PointCloud, self.pointcloud_callback)
         rospy.Subscriber("/obstacle_metadata", Float64MultiArray, self.dynamic_obs_callback)
-        rospy.Subscriber("/odometry", Odometry, self.odometry_callback)
+        rospy.Subscriber("/odom", Odometry, self.odometry_callback)
         
 
     def odometry_callback(self, msg_odom):
+        print("Recieved data")
         with self.data_lock:
             self.x_init = msg_odom.pose.pose.position.x
             self.y_init = msg_odom.pose.pose.position.y
@@ -155,8 +162,10 @@ class PlanningTraj:
             
 
     def run_optimization(self):
+        # Signal that a new optimization is to be started
+        # self.done_pub.publish(0)
         start_time = time.time()
-
+        print("Starting Optimization")
         # prob = mpc_non_dy.batch_crowd_nav(
         #     self.a_obs_1, self.b_obs_1, self.a_obs_2, self.b_obs_2,
         #     self.v_max, self.v_min, self.a_max, 50, 10,
@@ -210,9 +219,11 @@ class PlanningTraj:
         )
 
         print(f"Optimization time: {time.time() - start_time:.4f} seconds")
-
+        print("Done with Optimization")
+        self.done_pub.publish(1)
+        self.rate.sleep()
         # Save the best coefficients to CSV
-        self.save_coefficients(c_x_best, c_y_best, self.x_obs_init_dy, self.y_obs_init_dy, self.vx_obs_dy, self.vy_obs_dy)
+        # self.save_coefficients(c_x_best, c_y_best, self.x_obs_init_dy, self.y_obs_init_dy, self.vx_obs_dy, self.vy_obs_dy)
 
     def save_coefficients(self, c_x_best, c_y_best, x_obs_init_dy, y_obs_init_dy, vx_obs_dy, vy_obs_dy):
         timestamp = rospy.get_time()

@@ -14,11 +14,10 @@ class Extractor:
     def __init__(self):
         rospy.init_node('extracting_node', anonymous=True)
         
-        rospy.Subscriber('/laserscan', LaserScan, self.laser_callback)
+        rospy.Subscriber('/scan', LaserScan, self.laser_callback)
 
         self.pointcloud_pub = rospy.Publisher('/pointcloud', PointCloud, queue_size=10)
         
-
     def laser_callback(self, scan_msg):
        
         pointcloud_msg = PointCloud()

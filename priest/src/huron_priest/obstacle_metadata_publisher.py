@@ -16,7 +16,7 @@ class ObstacleVelocityPublisher:
         self.velocity_publisher = rospy.Publisher(
             "obstacle_metadata", Float64MultiArray, queue_size=10
         )
-        rospy.Subscriber("/pedestrians_pose", MarkerArray, self.obstacle_callback)
+        rospy.Subscriber("/pedestrians", MarkerArray, self.obstacle_callback)
 
         self.previous_data = {}
 

@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="priest" type="laserscan_to_pointcloud.py" name="laserscan_to_pointcloud" />
+  <node pkg="priest" type="obstacle_metadata_publisher.py" name="obstacle_metadata_publisher" />
+</launch>
